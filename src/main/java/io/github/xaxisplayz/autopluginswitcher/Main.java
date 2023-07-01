@@ -47,6 +47,10 @@ public class Main extends JavaPlugin {
         getCommand("stop").setExecutor(new StopCommand(this));
         getCommand("start").setExecutor(new StartCommand(this));
 
+        if(!loadConfiguration()){
+            return;
+        }
+
         run();
 
     }
@@ -57,13 +61,11 @@ public class Main extends JavaPlugin {
             downloadGithubRelease();
         }
 
-        loadConfiguration();
-
         getLogger().info("AutoPluginSwitcher has successfully loaded!");
 
-        startCooldownCheck();
-
         if(checked) saveData();
+
+        startCooldownCheck();
 
     }
 
@@ -86,7 +88,7 @@ public class Main extends JavaPlugin {
         cancelCooldownCheck();
     }
 
-    private void loadConfiguration(){
+    private boolean loadConfiguration(){
 
         if(!getDataFolder().exists()) getDataFolder().mkdirs();
 
@@ -103,7 +105,7 @@ public class Main extends JavaPlugin {
         if(getConfig().getString("github_link") == null || getConfig().getString("github_link").isBlank()) {
             getLogger().severe("Found no github link! Disabling plugin...");
             getServer().getPluginManager().disablePlugin(this);
-            return;
+            return false;
         }
         GITHUB_LINK = getConfig().getString("github_link");
         taskInterval = getConfig().getLong("task_interval");
@@ -111,6 +113,8 @@ public class Main extends JavaPlugin {
         timestamp = getConfig().getLong("timestamp");
         pluginFileName = getConfig().getString("file_name");
         mapFolderNames = getConfig().getStringList("map_names");
+
+        return true;
 
     }
 
