@@ -1,37 +1,61 @@
 package io.github.xaxisplayz.autopluginswitcher;
 
+import io.github.xaxisplayz.autopluginswitcher.commands.ResetCommand;
+import io.github.xaxisplayz.autopluginswitcher.commands.StartCommand;
+import io.github.xaxisplayz.autopluginswitcher.commands.StopCommand;
+import io.github.xaxisplayz.autopluginswitcher.util.FileUtil;
 import net.lingala.zip4j.ZipFile;
 import net.lingala.zip4j.exception.ZipException;
 import org.apache.http.client.methods.CloseableHttpResponse;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
-import java.io.*;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 public class Main extends JavaPlugin {
 
     private String GITHUB_LINK;
     private long cooldown;
-    private long time;
-    private long currentTime;
+    private long timestamp;
     private long taskInterval;
-    private BukkitTask task;
-    private String zipFileDestinationPath;
-    private String zipFile;
-
     private String pluginFileName;
     private List<String> mapFolderNames = new ArrayList<>();
+
+    private Logger logger;
+    private File zipFileDestinationPath;
+    private File zipFile;
+    private File pluginsFolder;
     private File mainFolder;
+    private BukkitTask task;
+    private boolean checked = false;
 
     @Override
     public void onEnable() {
+
+        getCommand("reset").setExecutor(new ResetCommand(this));
+        getCommand("stop").setExecutor(new StopCommand(this));
+        getCommand("start").setExecutor(new StartCommand(this));
+
+        run();
+
+    }
+
+    public void run(){
+
+        if(!getConfig().getBoolean("il")){
+            downloadGithubRelease();
+        }
 
         loadConfiguration();
 
@@ -39,6 +63,22 @@ public class Main extends JavaPlugin {
 
         startCooldownCheck();
 
+        if(checked) saveData();
+
+    }
+
+    public void stop(){
+        task.cancel();
+    }
+
+    public void resume(){
+        startCooldownCheck();
+    }
+
+    public void reset(){
+        task.cancel();
+        timestamp = System.currentTimeMillis();
+        startCooldownCheck();
     }
 
     @Override
@@ -57,24 +97,38 @@ public class Main extends JavaPlugin {
         reloadConfig();
 
         mainFolder = getDataFolder().getParentFile().getParentFile();
+        pluginsFolder = getDataFolder().getParentFile();
+
         cooldown = getConfig().getLong("cooldown");
+        if(getConfig().getString("github_link") == null || getConfig().getString("github_link").isBlank()) {
+            getLogger().severe("Found no github link! Disabling plugin...");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
         GITHUB_LINK = getConfig().getString("github_link");
-        time = getConfig().getLong("time");
         taskInterval = getConfig().getLong("task_interval");
+
+        timestamp = getConfig().getLong("timestamp");
         pluginFileName = getConfig().getString("file_name");
-        currentTime = System.currentTimeMillis();
         mapFolderNames = getConfig().getStringList("map_names");
 
     }
 
+    private void saveData(){
+        getConfig().set("timestamp", timestamp);
+        getConfig().set("file_name", pluginFileName);
+        getConfig().set("map_names", mapFolderNames);
+    }
+
     private long calculateExpirationTime(){
-        return time + cooldown;
+        return timestamp + cooldown;
     }
 
     private void startCooldownCheck(){
-        task = getServer().getScheduler().runTaskTimerAsynchronously(this, ()->{
-            if(currentTime >= calculateExpirationTime()){
+        task = getServer().getScheduler().runTaskTimer(this, ()->{
+            if(System.currentTimeMillis() >= calculateExpirationTime()){
                 downloadGithubRelease();
+                checked = true;
             }
         }, 0L, taskInterval);
     }
@@ -83,51 +137,62 @@ public class Main extends JavaPlugin {
         if(task != null) task.cancel();
     }
 
-    private void downloadGithubRelease(){
+    private BukkitTask asyncTask;
+    private BukkitTask restartTask;
 
-        Bukkit.getServer().broadcastMessage("restarting server soon...!");
+    private void downloadGithubRelease() {
 
-        zipFileDestinationPath = getDataFolder() + "/data";
+        loadFiles();
 
-        File folder = new File(zipFileDestinationPath);
-
-        if(!folder.exists()) folder.mkdirs();
-
-        zipFile =  getDataFolder() + "/data/" + "release.zip";
-
-        try {
-            downloadFile(GITHUB_LINK);
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-
-        unzipFile();
-        deleteFile(zipFile);
-
-        performFileCleanup();
-        performMapCleanup();
-
-        try {
-            readInfoFile(zipFileDestinationPath + "/info.txt");
-            saveConfig();
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-
-        for(File mapFolder : new File(zipFileDestinationPath + "/maps").listFiles()){
-            moveDirectory(mapFolder.getPath(), mainFolder.getPath());
-        }
-
-        File plugin = new File(zipFileDestinationPath, getConfig().getString("file_name"));
-
-        moveFile(plugin.getPath(), getDataFolder().getParentFile().getPath());
-
-        new File(zipFileDestinationPath).delete();
+        executeAsyncTask();
 
         resetExpirationTime();
 
-        restartServer();
+        saveData();
 
+        logger.info("restarting server in "+ getConfig().getList("server_restart_delay") +" seconds...");
+
+        restartTask = Bukkit.getScheduler().runTaskLater(this, this::restartServer, getConfig().getLong("server_restart_delay") * 20L);
+
+    }
+
+    private void loadFiles(){
+        logger = LogManager.getLogger("AutoPluginSwitcher");
+
+        logger.info("initializing files...");
+
+        zipFileDestinationPath = new File(getDataFolder() + "/data");
+
+        if (!zipFileDestinationPath.exists()) zipFileDestinationPath.mkdirs();
+
+        logger.info("created zip file destination path...");
+
+        zipFile = new File(getDataFolder() + "/data/release.zip");
+    }
+
+    private void executeAsyncTask(){
+        asyncTask = Bukkit.getScheduler().runTaskAsynchronously(this, () -> {
+            try {
+                downloadFile(GITHUB_LINK);
+                logger.info("successfully downloaded github release!");
+                logger.info("unzipping...");
+                unzipFile();
+                logger.info("Successfully unzipped file!");
+                FileUtil.deleteFile(zipFile);
+                performFileCleanup();
+                performMapCleanup();
+                logger.info("Performing file cleanup...");
+                logger.info("reading data...");
+                readData();
+                logger.info("moving files/directories...");
+                moveFilesAndDirectories();
+                zipFile.delete();
+                logger.info("deleted zip file...");
+                asyncTask.cancel();
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        });
     }
 
     private void downloadFile(String url) throws IOException{
@@ -144,114 +209,70 @@ public class Main extends JavaPlugin {
                 outputStream.close();
             }
         }
+        task.cancel();
     }
 
-    private void unzipFile(){
-        ZipFile zipFile = new ZipFile(new File(this.zipFile));
+    private void unzipFile() {
         try {
-            zipFile.extractAll(zipFileDestinationPath);
+            new ZipFile(zipFile).extractAll(zipFileDestinationPath.getPath());
         } catch (ZipException e) {
             throw new RuntimeException(e);
         }
     }
 
-    private void readInfoFile(String infoFile) throws IOException {
-        try (BufferedReader reader = new BufferedReader(new FileReader(infoFile))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                // Process each line of the info.txt file and extract necessary data
-                if(line.startsWith("plugin_file_name:")){
-                    String name = line.split(" ")[1];
-                    getConfig().set("file_name", name);
-                } else if (line.startsWith("map_names:{")) {
-                    String s = line.split("\\{")[1];
-                    String b = s.replace(" ", "");
-                    String[] a = b.split(",");
-                    mapFolderNames.addAll(Arrays.asList(a));
-                    getConfig().set("map_names", mapFolderNames);
+    private void readData() {
+        File[] files = zipFileDestinationPath.listFiles();
+        if (files != null) {
+            for (File file : files) {
+                if (file.isDirectory())
+                    continue;
+                if (file.isFile() || file.getName().contains(".jar")) {
+                    pluginFileName = file.getName();
+                }
+            }
+        }
+        File[] folders = new File(zipFileDestinationPath, "maps").listFiles();
+        if (folders != null) {
+            for (File folder : folders) {
+                mapFolderNames.add(folder.getName());
+            }
+        }
+    }
+
+    private void performMapCleanup() {
+        File[] dirs = getDataFolder().getParentFile().getParentFile().listFiles(File::isDirectory);
+        if (dirs != null) {
+            for (File dir : dirs) {
+                if (mapFolderNames.stream().anyMatch(s -> s.equalsIgnoreCase(dir.getName()))) {
+                    FileUtil.deleteDirectory(dir);
                 }
             }
         }
     }
 
-    private void deleteFile(String filePath) {
-        File file = new File(filePath);
-        if (file.exists()) {
-            file.delete();
-        }
-    }
-
-    private void deleteDirectory(String directoryPath) {
-        File directory = new File(directoryPath);
-        if (directory.exists()) {
-            File[] files = directory.listFiles();
-            if (files != null) {
-                for (File file : files) {
-                    if (file.isDirectory()) {
-                        deleteDirectory(file.getAbsolutePath());
-                    } else {
-                        file.delete();
-                    }
-                }
-            }
-            directory.delete();
-        }
-    }
-
-    private void moveDirectory(String sourcePath, String destinationPath) {
-
-        File sourceDirectory = new File(sourcePath);
-
-        File destinationDirectory = new File(destinationPath);
-
-        if (sourceDirectory.exists()) {
-
-            if (!destinationDirectory.exists()) destinationDirectory.mkdirs();
-
-            for (File file : sourceDirectory.listFiles()) {
-                if (file.isDirectory()) {
-                    moveDirectory(file.getAbsolutePath(), destinationPath + File.separator + file.getName());
-                } else {
-                    moveFile(file.getAbsolutePath(), destinationPath + File.separator + file.getName());
-                }
-            }
-            sourceDirectory.delete();
-        }
-    }
-
-    private void moveFile(String sourcePath, String destinationPath) {
-        File sourceFile = new File(sourcePath);
-        File destinationFile = new File(destinationPath);
-        if (sourceFile.exists()) {
-            if (!destinationFile.getParentFile().exists()) {
-                destinationFile.getParentFile().mkdirs();
-            }
-            sourceFile.renameTo(destinationFile);
-        }
-    }
-
-    private void performMapCleanup(){
-        //aps file        plugins           main folder
-        File folder = getDataFolder().getParentFile().getParentFile();
-
-        for(File dir : folder.listFiles()){
-            if(!dir.isDirectory()) return;
-            if(mapFolderNames.stream().anyMatch(s -> s.equalsIgnoreCase(dir.getName()))){
-                deleteDirectory(dir.getPath());
+    private void moveFilesAndDirectories() {
+        File[] mapFolders = new File(zipFileDestinationPath + "/maps").listFiles();
+        if (mapFolders != null) {
+            for (File mapFolder : mapFolders) {
+                FileUtil.moveDirectory(mapFolder, mainFolder.getPath());
             }
         }
+        File plugin = new File(zipFileDestinationPath, getConfig().getString("file_name"));
+        FileUtil.moveFile(plugin, getDataFolder().getParentFile().getPath());
     }
 
     private void performFileCleanup(){
-       deleteFile(new File(getDataFolder(), pluginFileName).getPath());
+        FileUtil.deleteFile(new File(pluginsFolder, pluginFileName));
     }
 
-    private void restartServer(){
+    private void restartServer() {
         Bukkit.getServer().dispatchCommand(Bukkit.getConsoleSender(), "restart");
+        if (restartTask != null)
+            restartTask.cancel();
     }
 
     private void resetExpirationTime(){
-        getConfig().set("time", System.currentTimeMillis());
+        getConfig().set("timestamp", System.currentTimeMillis());
     }
 
 }

@@ -1,0 +1,14 @@
+main: io.github.xaxisplayz.autopluginswitcher.Main
+name: AutoPluginSwitcher
+version: 1.0
+api-version: 1.20
+author: Xaxis
+description: Automatically switches plugins every certain amount of time
+website: https://xaxisplayz.github.io
+commands:
+  reset:
+    description: reset timestamp
+  start:
+    description: resume task
+  stop:
+    description: stop task
