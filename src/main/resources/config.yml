@@ -1,8 +1,7 @@
-il: false #do not touch!
-server_restart_delay: 10 #in seconds
 github_link: ""
-cooldown: 10 # in milliseconds. The amount of time for the plugin to wait until it downloads from GitHub again.
 task_interval: 5 # in seconds. The interval to check if the cooldown is up. IS NOT AN ASYNC TASK. Don't worry everything else is Async and/or thread safe.
 time_stamp: 0 #do not touch!
 file_name: "" #do not touch!
-map_names: {} #do not touch!
+server_restart_delay: 10 # in seconds. Stands for the countdown until the server restarts itself.
+cooldown: 2629800000 # in milliseconds. The amount of time for the plugin to wait until it downloads from GitHub again. Currently, set to 1 month
+maps: {} # do not touch!
